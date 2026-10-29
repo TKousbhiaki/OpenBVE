@@ -1,11 +1,6 @@
 name: OpenBVE Windows build test
 on:
   workflow_dispatch:
-  push:
-    paths:
-      - '.github/workflows/openbve-build-test.yml'
-      - 'source/**'
-      - 'OpenBVE.sln'
 permissions:
   contents: read
 jobs:
@@ -14,30 +9,42 @@ jobs:
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
-        with:
-          persist-credentials: false
-      - name: Install NuGet
-        uses: NuGet/setup-nuget@v2
+      - uses: NuGet/setup-nuget@v2
       - name: Restore packages
         shell: pwsh
         run: nuget restore OpenBVE.sln -NonInteractive
-      - name: Build solution (Release, Any CPU)
+      - name: Build solution
         shell: pwsh
         run: |
           $msbuild = & "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe" -latest -requires Microsoft.Component.MSBuild -find MSBuild\**\Bin\MSBuild.exe | Select-Object -First 1
-          if (-not $msbuild) { throw 'MSBuild not found on runner' }
+          if (-not $msbuild) { throw 'MSBuild not found' }
           & $msbuild OpenBVE.sln /m /p:Configuration=Release '/p:Platform=Any CPU' /verbosity:minimal /bl:openbve-build.binlog
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-      - name: Collect build files
-        if: success()
+      - name: Collect all Release outputs and verify executable
         shell: pwsh
         run: |
-          New-Item -ItemType Directory -Force -Path build-output | Out-Null
-          Get-ChildItem -Path source -Recurse -Directory | Where-Object { $_.FullName -match '\\bin\\Release$' } | ForEach-Object {
-            $name = ($_.FullName -replace '[^a-zA-Z0-9_-]', '_')
-            Copy-Item $_.FullName "build-output/$name" -Recurse -Force
+          New-Item -Type Directory -Force -Path build-output | Out-Null
+          $files = Get-ChildItem -Path source -Recurse -File | Where-Object {
+            $_.FullName -match '[\\/]bin[\\/]' -and $_.FullName -match '[\\/]Release([\\/]|$)'
           }
-          if (-not (Get-ChildItem build-output -Force)) { throw 'No Release output directories found; inspect project configurations.' }
+          foreach ($f in $files) {
+            $relative = [IO.Path]::GetRelativePath((Get-Location).Path, $f.FullName)
+            $target = Join-Path 'build-output' $relative
+            New-Item -Type Directory -Force -Path (Split-Path $target) | Out-Null
+            Copy-Item -LiteralPath $f.FullName -Destination $target -Force
+          }
+          $manifest = Get-ChildItem build-output -Recurse -File | ForEach-Object { $_.FullName.Substring((Resolve-Path build-output).Path.Length + 1) }
+          $manifest | Set-Content -Path build-manifest.txt -Encoding utf8
+          Write-Host "Collected $($manifest.Count) output files"
+          $exe = Get-ChildItem build-output -Recurse -File -Filter '*.exe'
+          $exe | ForEach-Object { Write-Host "Executable: $($_.FullName)" }
+          if (-not $exe) { throw 'No EXE in Release output. Check build-manifest.txt and project output paths.' }
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: OpenBVE-build-manifest
+          path: build-manifest.txt
+          if-no-files-found: ignore
       - uses: actions/upload-artifact@v4
         if: success()
         with:
@@ -50,4 +57,3 @@ jobs:
           name: OpenBVE-build-log
           path: openbve-build.binlog
           if-no-files-found: ignore
-          retention-days: 7
