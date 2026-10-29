@@ -1,0 +1,53 @@
+name: OpenBVE Windows build test
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - '.github/workflows/openbve-build-test.yml'
+      - 'source/**'
+      - 'OpenBVE.sln'
+permissions:
+  contents: read
+jobs:
+  build:
+    runs-on: windows-2022
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Install NuGet
+        uses: NuGet/setup-nuget@v2
+      - name: Restore packages
+        shell: pwsh
+        run: nuget restore OpenBVE.sln -NonInteractive
+      - name: Build solution (Release, Any CPU)
+        shell: pwsh
+        run: |
+          $msbuild = & "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe" -latest -requires Microsoft.Component.MSBuild -find MSBuild\**\Bin\MSBuild.exe | Select-Object -First 1
+          if (-not $msbuild) { throw 'MSBuild not found on runner' }
+          & $msbuild OpenBVE.sln /m /p:Configuration=Release '/p:Platform=Any CPU' /verbosity:minimal /bl:openbve-build.binlog
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Collect build files
+        if: success()
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path build-output | Out-Null
+          Get-ChildItem -Path source -Recurse -Directory | Where-Object { $_.FullName -match '\\bin\\Release$' } | ForEach-Object {
+            $name = ($_.FullName -replace '[^a-zA-Z0-9_-]', '_')
+            Copy-Item $_.FullName "build-output/$name" -Recurse -Force
+          }
+          if (-not (Get-ChildItem build-output -Force)) { throw 'No Release output directories found; inspect project configurations.' }
+      - uses: actions/upload-artifact@v4
+        if: success()
+        with:
+          name: OpenBVE-Release-build-outputs
+          path: build-output/
+          retention-days: 7
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: OpenBVE-build-log
+          path: openbve-build.binlog
+          if-no-files-found: ignore
+          retention-days: 7
