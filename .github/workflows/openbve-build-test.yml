@@ -9,47 +9,42 @@ jobs:
     steps:
       - name: Checkout source
         uses: actions/checkout@v4
-
       - name: Setup MSBuild
         uses: microsoft/setup-msbuild@v2
-
       - name: Setup NuGet
         uses: NuGet/setup-nuget@v2
-
       - name: Restore packages
         run: nuget restore OpenBVE.sln -NonInteractive
-
-      - name: Build OpenBVE main executable (Release x86)
+      - name: Build OpenBVE main executable (Release AnyCPU)
         shell: pwsh
         run: |
-          msbuild 'source\OpenBVE\OpenBve.csproj' /m /t:Build /p:Configuration=Release /p:Platform=x86 /p:RestorePackages=false /verbosity:minimal /bl:openbve-build.binlog
+          msbuild 'source\OpenBVE\OpenBve.csproj' /m /t:Build /p:Configuration=Release /p:Platform=AnyCPU /verbosity:minimal /bl:openbve-build.binlog
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-
-      - name: Locate and collect executable
+      - name: Collect OpenBVE main executable and dependencies
         shell: pwsh
         run: |
-          $exe = Get-ChildItem -Path . -Recurse -File -Filter 'OpenBve.exe' | Where-Object { $_.FullName -match '[\\/]bin[\\/]' } | Select-Object -First 1
-          if (-not $exe) {
-            Write-Host 'No OpenBve.exe found; listing candidate output directories:'
-            Get-ChildItem -Path 'source' -Recurse -File -Include '*.exe','*.dll' | Select-Object -First 100 FullName | Format-Table -AutoSize
-            throw 'Main executable not generated. Inspect openbve-build.binlog.'
+          $outDir = Join-Path $PWD 'bin_release'
+          Write-Host "Expected output directory: $outDir"
+          if (-not (Test-Path $outDir)) { throw 'bin_release directory is missing' }
+          $exe = Join-Path $outDir 'OpenBve.exe'
+          if (-not (Test-Path $exe)) {
+            Get-ChildItem -Path $outDir -File | Select-Object Name,Length | Format-Table -AutoSize
+            throw 'OpenBve.exe missing in bin_release'
           }
-          Write-Host "Found EXE: $($exe.FullName)"
           New-Item -ItemType Directory -Force -Path 'build-output' | Out-Null
-          Copy-Item -Path (Join-Path $exe.Directory.FullName '*') -Destination 'build-output' -Recurse -Force
+          Copy-Item -Path (Join-Path $outDir '*') -Destination 'build-output' -Recurse -Force
           Get-ChildItem -Path 'build-output' -Recurse -File | Select-Object FullName,Length | Out-File 'build-manifest.txt'
-          if (-not (Test-Path 'build-output/OpenBve.exe')) { throw 'EXE not copied.' }
-
+          Write-Host "OpenBve.exe found: $exe"
+          Write-Host "Collected files: $((Get-ChildItem 'build-output' -Recurse -File).Count)"
       - name: Upload build output
         if: success()
         uses: actions/upload-artifact@v4
         with:
-          name: OpenBVE-Windows-Release-x86
+          name: OpenBVE-Windows-Release-AnyCPU
           path: |
             build-output/
             build-manifest.txt
           if-no-files-found: error
-
       - name: Upload diagnostic log
         if: always()
         uses: actions/upload-artifact@v4
