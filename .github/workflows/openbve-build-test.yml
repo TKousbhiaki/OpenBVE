@@ -1,59 +1,61 @@
 name: OpenBVE Windows build test
+
 on:
   workflow_dispatch:
-permissions:
-  contents: read
+
 jobs:
   build:
-    runs-on: windows-2022
-    timeout-minutes: 60
+    runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: NuGet/setup-nuget@v2
+      - name: Checkout source
+        uses: actions/checkout@v4
+
+      - name: Setup MSBuild
+        uses: microsoft/setup-msbuild@v2
+
+      - name: Setup NuGet
+        uses: NuGet/setup-nuget@v2
+
       - name: Restore packages
-        shell: pwsh
         run: nuget restore OpenBVE.sln -NonInteractive
-      - name: Build solution
+
+      - name: Build OpenBVE main executable (Release x86)
         shell: pwsh
         run: |
-          $msbuild = & "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe" -latest -requires Microsoft.Component.MSBuild -find MSBuild\**\Bin\MSBuild.exe | Select-Object -First 1
-          if (-not $msbuild) { throw 'MSBuild not found' }
-          & $msbuild OpenBVE.sln /m /p:Configuration=Release '/p:Platform=Any CPU' /verbosity:minimal /bl:openbve-build.binlog
+          msbuild 'source\OpenBVE\OpenBve.csproj' /m /t:Build /p:Configuration=Release /p:Platform=x86 /p:RestorePackages=false /verbosity:minimal /bl:openbve-build.binlog
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-      - name: Collect all Release outputs and verify executable
+
+      - name: Locate and collect executable
         shell: pwsh
         run: |
-          New-Item -Type Directory -Force -Path build-output | Out-Null
-          $files = Get-ChildItem -Path source -Recurse -File | Where-Object {
-            $_.FullName -match '[\\/]bin[\\/]' -and $_.FullName -match '[\\/]Release([\\/]|$)'
+          $exe = Get-ChildItem -Path . -Recurse -File -Filter 'OpenBve.exe' | Where-Object { $_.FullName -match '[\\/]bin[\\/]' } | Select-Object -First 1
+          if (-not $exe) {
+            Write-Host 'No OpenBve.exe found; listing candidate output directories:'
+            Get-ChildItem -Path 'source' -Recurse -File -Include '*.exe','*.dll' | Select-Object -First 100 FullName | Format-Table -AutoSize
+            throw 'Main executable not generated. Inspect openbve-build.binlog.'
           }
-          foreach ($f in $files) {
-            $relative = [IO.Path]::GetRelativePath((Get-Location).Path, $f.FullName)
-            $target = Join-Path 'build-output' $relative
-            New-Item -Type Directory -Force -Path (Split-Path $target) | Out-Null
-            Copy-Item -LiteralPath $f.FullName -Destination $target -Force
-          }
-          $manifest = Get-ChildItem build-output -Recurse -File | ForEach-Object { $_.FullName.Substring((Resolve-Path build-output).Path.Length + 1) }
-          $manifest | Set-Content -Path build-manifest.txt -Encoding utf8
-          Write-Host "Collected $($manifest.Count) output files"
-          $exe = Get-ChildItem build-output -Recurse -File -Filter '*.exe'
-          $exe | ForEach-Object { Write-Host "Executable: $($_.FullName)" }
-          if (-not $exe) { throw 'No EXE in Release output. Check build-manifest.txt and project output paths.' }
-      - uses: actions/upload-artifact@v4
-        if: always()
-        with:
-          name: OpenBVE-build-manifest
-          path: build-manifest.txt
-          if-no-files-found: ignore
-      - uses: actions/upload-artifact@v4
+          Write-Host "Found EXE: $($exe.FullName)"
+          New-Item -ItemType Directory -Force -Path 'build-output' | Out-Null
+          Copy-Item -Path (Join-Path $exe.Directory.FullName '*') -Destination 'build-output' -Recurse -Force
+          Get-ChildItem -Path 'build-output' -Recurse -File | Select-Object FullName,Length | Out-File 'build-manifest.txt'
+          if (-not (Test-Path 'build-output/OpenBve.exe')) { throw 'EXE not copied.' }
+
+      - name: Upload build output
         if: success()
+        uses: actions/upload-artifact@v4
         with:
-          name: OpenBVE-Release-build-outputs
-          path: build-output/
-          retention-days: 7
-      - uses: actions/upload-artifact@v4
+          name: OpenBVE-Windows-Release-x86
+          path: |
+            build-output/
+            build-manifest.txt
+          if-no-files-found: error
+
+      - name: Upload diagnostic log
         if: always()
+        uses: actions/upload-artifact@v4
         with:
-          name: OpenBVE-build-log
-          path: openbve-build.binlog
-          if-no-files-found: ignore
+          name: OpenBVE-build-diagnostics
+          path: |
+            openbve-build.binlog
+            build-manifest.txt
+          if-no-files-found: warn
